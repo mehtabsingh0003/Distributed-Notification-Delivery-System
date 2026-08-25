@@ -332,5 +332,4 @@ Please avoid committing generated build directories, dependency folders, credent
 ## License
 
 No license has been selected for this repository yet. Add a `LICENSE` file before distributing or accepting external contributions.
-#   D i s t r i b u t e d - N o t i f i c a t i o n - D e l i v e r y - S y s t e m  
- 
+#
