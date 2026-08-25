@@ -456,4 +456,4 @@ Do not commit generated build directories, dependency folders, credentials, or l
 
 ## License
 
-No license has been selected for this repository yet. Add a `LICENSE` file before distributing the project or accepting external contributions.
+This project is currently for personal and educational use. A formal license will be added later.
