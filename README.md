@@ -1,448 +1,265 @@
 # SignalDesk
 
-> A fault-tolerant C++17 notification delivery platform built with RabbitMQ, MySQL, retries, circuit breakers, dead-letter queues, and a React monitoring dashboard.
+> A fault-tolerant C++17 notification delivery platform with RabbitMQ, MySQL, retries, circuit breakers, dead-letter queues, and a React monitoring dashboard.
 
-SignalDesk is a distributed notification delivery system designed to demonstrate how reliable backend infrastructure can be built using modern C++.
+SignalDesk accepts notification requests through a REST API, persists them in MySQL, routes delivery work through RabbitMQ, and processes Email, SMS, and Push notifications using independent worker pools.
 
-It accepts notification requests through a REST API, persists them in MySQL, routes delivery work through RabbitMQ, and processes Email, SMS, and Push notifications using independent worker pools.
+The project uses mock notification providers for local development and failure simulation. No real Email, SMS, or Push messages are sent by default.
 
-The project currently uses **mock notification providers**, making it suitable for local development and learning without requiring external Email, SMS, or Push provider accounts.
+## Contents
 
----
+- [Features](#features)
+- [Architecture](#architecture)
+- [Technology Stack](#technology-stack)
+- [Project Structure](#project-structure)
+- [Requirements](#requirements)
+- [Run Locally](#run-locally)
+- [Configuration](#configuration)
+- [API Reference](#api-reference)
+- [RabbitMQ Management](#rabbitmq-management)
+- [Database Schema](#database-schema)
+- [Testing and Validation](#testing-and-validation)
+- [Production Considerations](#production-considerations)
+- [Future Improvements](#future-improvements)
+- [Contributing](#contributing)
+- [License](#license)
 
-## 🚀 Features
+## Features
 
-- 📧 Email notification channel
-- 📱 SMS notification channel
-- 🔔 Push notification channel
-- ⚡ C++17 backend
-- 🌐 REST API using Boost.Beast
-- 🗄️ MySQL persistence
-- 🐇 RabbitMQ message broker
-- 🔄 Retry queues with configurable delays
-- 🛡️ Per-channel circuit breakers
-- 💀 Dead-letter queues
-- 🔑 Idempotent notification submission
-- 📊 Delivery attempt history
-- ❤️ Health-check endpoint
-- 🧵 Multi-threaded worker pools
-- 📦 Transactional notification + outbox writes
-- 🖥️ React/Vite monitoring dashboard
-- 🧪 Mock providers for failure simulation
+- Email, SMS, and Push notification channels
+- C++17 backend with Boost.Beast REST API
+- MySQL persistence with connection pooling
+- Transactional notification and outbox writes
+- RabbitMQ channel routing and worker pools
+- Configurable retry queues with exponential backoff
+- Per-channel circuit breakers
+- Channel-specific dead-letter queues
+- Idempotent notification submission
+- Delivery-attempt history and provider references
+- `/healthz` health-check endpoint
+- React and TypeScript monitoring dashboard
+- Mock providers for predictable local testing
 
----
-
-# 🏗️ Architecture
+## Architecture
 
 ```text
-                         ┌───────────────────────┐
-                         │     React Dashboard   │
-                         │      / API Client     │
-                         └───────────┬───────────┘
-                                     │
-                                     ▼
-                         ┌───────────────────────┐
-                         │   Boost.Beast REST    │
-                         │         API           │
-                         └───────────┬───────────┘
-                                     │
-                    ┌────────────────┴────────────────┐
-                    │                                 │
-                    ▼                                 ▼
-          ┌──────────────────┐              ┌──────────────────┐
-          │      MySQL       │              │     RabbitMQ     │
-          │                  │              │                  │
-          │ Notifications    │              │ Channel Queues   │
-          │ Outbox Events    │              │ Retry Queues     │
-          │ Delivery Attempts│              │ Dead Letter Queues│
-          └──────────────────┘              └────────┬─────────┘
-                                                     │
-                                                     ▼
-                                      ┌────────────────────────┐
-                                      │      C++ Workers        │
-                                      │                        │
-                                      │ Email │ SMS │ Push     │
-                                      └────────────┬───────────┘
-                                                   │
-                                                   ▼
-                                      ┌────────────────────────┐
-                                      │    Provider Adapters    │
-                                      │      Mock Providers     │
-                                      └────────────────────────┘
-🔄 Notification Flow
-Client
-  │
-  │ POST /api/notifications
-  ▼
-REST API
-  │
-  ├──► MySQL
-  │      ├── notification
-  │      └── outbox event
-  │
-  └──► RabbitMQ
-           │
-           ├── EMAIL
-           ├── SMS
-           └── PUSH
-                │
-                ▼
-             Worker
-                │
-                ▼
-          Provider Adapter
-                │
-        ┌───────┴────────┐
-        │                │
-      Success          Failure
-        │                │
-        ▼                ▼
-      SENT        Retry / Circuit Breaker
-                         │
-                         ▼
-                   Retry Queue
-                         │
-                         ▼
-                    Worker Again
-                         │
-                         ▼
-                 Maximum Retries?
-                    /        \
-                  No          Yes
-                  │            │
-                  ▼            ▼
-                Retry          DLQ
-✨ Reliability Features
+                         +-----------------------+
+                         | React Dashboard       |
+                         | or API Client          |
+                         +-----------+-----------+
+                                     |
+                                     v
+                         +-----------------------+
+                         | Boost.Beast REST API   |
+                         +-----------+-----------+
+                                     |
+                    +----------------+----------------+
+                    |                                 |
+                    v                                 v
+          +-------------------+             +-------------------+
+          | MySQL            |             | RabbitMQ          |
+          | notifications    |             | channel queues    |
+          | delivery_attempts|             | retry queues      |
+          | outbox_events    |             | dead-letter queues|
+          +-------------------+             +---------+---------+
+                                                     |
+                                                     v
+                                      +--------------------------+
+                                      | C++ workers              |
+                                      | Email / SMS / Push       |
+                                      +------------+-------------+
+                                                   |
+                                                   v
+                                      +--------------------------+
+                                      | Mock provider adapters   |
+                                      +--------------------------+
+```
 
-SignalDesk demonstrates several concepts commonly used in distributed systems.
+### Notification flow
 
-Transactional Persistence
+1. The client submits a notification to `POST /api/notifications`.
+2. The API writes the notification and outbox event in one MySQL transaction.
+3. The message is published to the RabbitMQ route for its channel.
+4. A channel worker calls the provider adapter.
+5. Each delivery attempt is recorded in MySQL.
+6. Transient failures move through the retry queue ladder.
+7. Messages that exhaust retries are sent to the channel dead-letter queue.
 
-The notification and its outbox event are written inside the same MySQL transaction.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed design and queue topology.
 
-BEGIN TRANSACTION
+## Technology Stack
 
-INSERT notification
-INSERT outbox_event
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| Backend | C++17 | Core service and workers |
+| HTTP | Boost.Beast | REST API server |
+| Messaging | RabbitMQ and AMQP-CPP | Asynchronous delivery work |
+| Database | MySQL and Connector/C++ | Durable state and audit history |
+| JSON | nlohmann/json | Request and response serialization |
+| Build | CMake | Native backend build |
+| Frontend | React and TypeScript | Monitoring dashboard |
+| Frontend tooling | Vite and Tailwind CSS | Development and styling |
+| Icons | Lucide React | Dashboard iconography |
 
-COMMIT
+## Project Structure
 
-This prevents the notification record from being created without its corresponding delivery event.
-
-RabbitMQ Routing
-
-Notifications are routed according to their channel:
-
-EMAIL → q.email
-SMS   → q.sms
-PUSH  → q.push
-
-Each channel has its own worker pool.
-
-Retry Mechanism
-
-Transient provider failures are routed through retry queues.
-
-Default retry delays:
-
-Attempt 1
-   │
-   └── 5 seconds
-          │
-          ▼
-Attempt 2
-   │
-   └── 15 seconds
-          │
-          ▼
-Attempt 3
-   │
-   └── 60 seconds
-          │
-          ▼
-       Final failure
-          │
-          ▼
-         DLQ
-
-The retry behavior is configurable through config/config.json.
-
-Circuit Breaker
-
-Each notification channel has its own circuit breaker.
-
-Example:
-
-Provider failures
-      │
-      ▼
-Failure threshold reached
-      │
-      ▼
-Circuit OPEN
-      │
-      ▼
-Requests temporarily blocked
-      │
-      ▼
-Open duration expires
-      │
-      ▼
-Circuit attempts recovery
-
-This prevents repeated failures from continuously hitting an unhealthy provider.
-
-Idempotency
-
-Clients can provide an idempotencyKey.
-
-Example:
-
-{
-  "idempotencyKey": "order-123-welcome",
-  "channel": "EMAIL",
-  "priority": "HIGH",
-  "recipient": "user@example.com",
-  "subject": "Welcome",
-  "body": "Your account is ready."
-}
-
-Submitting the same idempotency key again does not create a duplicate notification.
-
-Delivery Attempt Tracking
-
-Every delivery attempt is stored in MySQL.
-
-Example:
-
-Notification
-    │
-    ├── Attempt 1 → TRANSIENT_FAILURE
-    │
-    ├── Attempt 2 → TRANSIENT_FAILURE
-    │
-    └── Attempt 3 → SUCCESS
-
-This makes it possible to inspect the complete delivery history.
-
-🛠️ Tech Stack
-Backend
-Technology	Purpose
-C++17	Core backend
-CMake	Build system
-Boost.Beast	HTTP REST server
-Boost	Threading and system utilities
-MySQL	Persistent storage
-MySQL Connector/C++	MySQL X DevAPI
-RabbitMQ	Message broker
-AMQP-CPP	RabbitMQ integration
-OpenSSL	Secure communication support
-nlohmann/json	JSON processing
-Frontend
-Technology	Purpose
-React	UI
-TypeScript	Frontend language
-Vite	Development/build tooling
-Tailwind CSS	Styling
-Lucide	Icons
-📁 Project Structure
-SignalDesk/
-│
-├── include/
-│   └── notification/
-│       ├── Config.hpp
-│       ├── Database.hpp
-│       ├── DeliveryAttemptRepository.hpp
-│       ├── Enums.hpp
-│       ├── HttpServer.hpp
-│       ├── IdGenerator.hpp
-│       ├── Logger.hpp
-│       ├── MockProviders.hpp
-│       ├── Models.hpp
-│       ├── NotificationRepository.hpp
-│       ├── Provider.hpp
-│       ├── ProviderRouter.hpp
-│       ├── RabbitMQPublisher.hpp
-│       ├── RabbitMQTopology.hpp
-│       └── Worker.hpp
-│
-├── src/
-│   ├── main.cpp
-│   ├── Database.cpp
-│   ├── DeliveryAttemptRepository.cpp
-│   ├── HttpServer.cpp
-│   ├── MockProviders.cpp
-│   ├── NotificationRepository.cpp
-│   ├── ProviderRouter.cpp
-│   ├── RabbitMQPublisher.cpp
-│   ├── RabbitMQTopology.cpp
-│   └── Worker.cpp
-│
-├── sql/
-│   └── schema.sql
-│
-├── config/
-│   └── config.json
-│
-├── frontend/
-│   ├── src/
-│   ├── package.json
-│   └── vite.config.*
-│
-├── scripts/
-│   └── install-deps-ubuntu.sh
-│
-├── docs/
-│   └── ARCHITECTURE.md
-│
-├── CMakeLists.txt
+```text
+.
+├── include/notification/       C++ headers
+├── src/                        C++ implementations and service entry point
+├── sql/schema.sql              MySQL schema and application user grant
+├── config/config.json          Runtime configuration template
+├── frontend/                   React/Vite dashboard
+├── scripts/                    Dependency installation scripts
+├── docs/ARCHITECTURE.md        Architecture documentation
+├── CMakeLists.txt              Backend build configuration
 ├── .gitignore
 └── README.md
-💻 Requirements
-Backend
+```
 
-Recommended environment:
+## Requirements
 
-Ubuntu 22.04 / 24.04
-CMake 3.16+
-GCC with C++17 support
-Boost.System
-Boost.Thread
-OpenSSL
-libuuid
-nlohmann-json
-MySQL 8+
-MySQL Connector/C++ 8
-RabbitMQ 3+
-AMQP-CPP
-Frontend
-Node.js 18+
-npm
-Modern web browser
+### Backend
 
-The backend is designed primarily for Linux/WSL development because MySQL, RabbitMQ, and AMQP-CPP are used as native Linux dependencies.
+- Ubuntu 22.04 or 24.04 recommended
+- CMake 3.16 or newer
+- GCC or another C++17-compatible compiler
+- Boost.System and Boost.Thread
+- OpenSSL
+- libuuid
+- nlohmann-json
+- MySQL 8+
+- MySQL Connector/C++ 8
+- RabbitMQ 3+
+- AMQP-CPP
 
-🚀 Running Locally
-1. Install Dependencies
+### Frontend
 
-From the project root:
+- Node.js 18 or newer
+- npm
+- A modern web browser
 
+The included installer supports Ubuntu 22.04 and 24.04:
+
+```bash
 ./scripts/install-deps-ubuntu.sh
+```
 
-The script installs the required system dependencies and builds AMQP-CPP when necessary.
+## Run Locally
 
-2. Start MySQL and RabbitMQ
+### 1. Start MySQL and RabbitMQ
+
+Install the required services, then start them on Ubuntu:
+
+```bash
 sudo systemctl start mysql
 sudo systemctl start rabbitmq-server
+```
 
-Check MySQL:
+Optional service checks:
 
+```bash
 sudo systemctl status mysql
-
-Check RabbitMQ:
-
 sudo systemctl status rabbitmq-server
-3. Initialize MySQL
+```
 
-Run:
+### 2. Initialize the database
 
+From the repository root:
+
+```bash
 sudo mysql < sql/schema.sql
+```
 
-The schema creates:
+The schema creates the `notification_db` database, its application tables, and the `notification_app` user. The sample password is `change-me`; change it before any shared or production deployment.
 
-notification_db
-│
-├── notifications
-├── delivery_attempts
-└── outbox_events
+### 3. Configure the service
 
-It also creates the application user:
+Edit [config/config.json](config/config.json) for your local database, RabbitMQ, worker, retry, and HTTP settings. Keep real credentials out of Git. The repository `.gitignore` allows local overrides such as `config/config.local.json`.
 
-notification_app
+### 4. Build the backend
 
-For local development, the default password in the schema is:
-
-change-me
-
-For real deployments, change this password and never commit production credentials.
-
-⚙️ Configuration
-
-The default configuration is:
-
-config/config.json
-
-Example:
-
-{
-  "dbHost": "127.0.0.1",
-  "dbPort": 33060,
-  "dbUser": "notification_app",
-  "dbPassword": "change-me",
-  "dbSchema": "notification_db",
-  "dbPoolSize": 8,
-
-  "amqpHost": "127.0.0.1",
-  "amqpPort": 5672,
-  "amqpUser": "guest",
-  "amqpPassword": "guest",
-  "amqpVhost": "/",
-
-  "workersPerChannel": 4,
-  "maxRetries": 3,
-  "retryDelaysMs": [5000, 15000, 60000],
-
-  "cbFailureThreshold": 5,
-  "cbOpenDurationMs": 30000,
-
-  "httpAddress": "0.0.0.0",
-  "httpPort": 8080,
-  "httpThreads": 4
-}
-Important Ports
-Port	Service
-33060	MySQL X DevAPI
-5672	RabbitMQ
-8080	SignalDesk REST API
-15672	RabbitMQ Management UI
-🔨 Build Backend
-
-From the project root:
-
+```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-
-Then:
-
 cmake --build build -j1
+```
 
--j1 is useful on machines with limited RAM.
+Use a larger build parallelism value, such as `-j4`, if the machine has enough memory.
 
-After successful compilation:
+### 5. Start SignalDesk
 
-build/notification_service
-
-will be created.
-
-▶️ Start SignalDesk
+```bash
 ./build/notification_service config/config.json
+```
 
-A successful startup should show messages similar to:
+The REST API listens on `http://localhost:8080` by default.
 
-ConnectionPool initialized
-RabbitMQ topology declared
-WorkerPool started
-HttpServer listening on 0.0.0.0:8080
-service ready
-🌐 API
-Health Check
+### 6. Start the dashboard
+
+Open a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the local Vite URL printed in the terminal. The development server proxies `/api` and `/healthz` to `http://127.0.0.1:8080`.
+
+Build the static frontend for deployment:
+
+```bash
+cd frontend
+npm run build
+```
+
+Generated files are written to `frontend/dist/`.
+
+## Configuration
+
+The default runtime configuration is in [config/config.json](config/config.json).
+
+| Key | Description | Default |
+| --- | --- | --- |
+| `dbHost`, `dbPort` | MySQL connection | `127.0.0.1`, `33060` |
+| `dbUser`, `dbPassword`, `dbSchema` | Database credentials and schema | `notification_app`, `change-me`, `notification_db` |
+| `dbPoolSize` | Database pool size | `8` |
+| `amqpHost`, `amqpPort` | RabbitMQ connection | `127.0.0.1`, `5672` |
+| `amqpUser`, `amqpPassword`, `amqpVhost` | RabbitMQ credentials | `guest`, `guest`, `/` |
+| `workersPerChannel` | Workers per channel | `4` |
+| `maxRetries` | Maximum retry count | `3` |
+| `retryDelaysMs` | Retry delays in milliseconds | `[5000, 15000, 60000]` |
+| `cbFailureThreshold` | Failures before a circuit opens | `5` |
+| `cbOpenDurationMs` | Circuit-open duration in milliseconds | `30000` |
+| `httpAddress`, `httpPort` | REST API bind address and port | `0.0.0.0`, `8080` |
+| `httpThreads` | HTTP worker threads | `4` |
+
+### Local service ports
+
+| Port | Service |
+| ---: | --- |
+| `33060` | MySQL X DevAPI |
+| `5672` | RabbitMQ AMQP |
+| `8080` | SignalDesk REST API |
+| `15672` | RabbitMQ Management UI |
+
+## API Reference
+
+### Health check
+
+```bash
 curl http://localhost:8080/healthz
+```
 
 Response:
 
-{
-  "status": "ok"
-}
-📤 Create Notification
+```json
+{"status":"ok"}
+```
+
+### Create a notification
+
+```bash
 curl -X POST http://localhost:8080/api/notifications \
   -H "Content-Type: application/json" \
   -d '{
@@ -452,36 +269,39 @@ curl -X POST http://localhost:8080/api/notifications \
     "subject": "Welcome",
     "body": "Your account is ready."
   }'
+```
 
-Supported channels:
+The endpoint returns `202 Accepted` after persistence and publish succeed.
 
-EMAIL
-SMS
-PUSH
+Supported values:
 
-Supported priorities:
+- `channel`: `EMAIL`, `SMS`, or `PUSH`
+- `priority`: `LOW`, `NORMAL`, or `HIGH`
 
-LOW
-NORMAL
-HIGH
+Optional idempotency key:
 
-The API returns a notification ID.
-
-Example:
-
+```json
 {
-  "id": "f4bb11eb-09bd-4f69-b4e8-0df46f3002c9",
+  "idempotencyKey": "order-123-welcome",
   "channel": "EMAIL",
-  "priority": "HIGH",
+  "priority": "NORMAL",
   "recipient": "user@example.com",
-  "status": "PENDING",
-  "attemptCount": 0
+  "subject": "Welcome",
+  "body": "Your account is ready."
 }
-🔍 List Notifications
+```
+
+Submitting the same idempotency key again prevents a duplicate notification.
+
+### List recent notifications
+
+```bash
 curl http://localhost:8080/api/notifications
+```
 
-Example:
+The endpoint returns up to 50 recent notifications:
 
+```json
 {
   "notifications": [
     {
@@ -489,28 +309,23 @@ Example:
       "channel": "EMAIL",
       "priority": "HIGH",
       "recipient": "user@example.com",
+      "subject": "Welcome",
       "status": "SENT",
       "attemptCount": 1
     }
   ]
 }
-🔎 Get Notification Details
+```
 
-Replace <notification-id> with the ID returned by the POST request:
+### Get notification details
 
+```bash
 curl http://localhost:8080/api/notifications/<notification-id>
+```
 
-The response includes:
+The detail response includes the notification and its `deliveryAttempts`:
 
-Notification information
-Current status
-Attempt count
-Provider reference
-Delivery attempt history
-Error information when applicable
-
-Example:
-
+```json
 {
   "id": "notification-id",
   "channel": "EMAIL",
@@ -525,191 +340,69 @@ Example:
     }
   ]
 }
-🖥️ Run the Dashboard
+```
 
-Open another terminal:
+## RabbitMQ Management
 
-cd frontend
+Enable the RabbitMQ management plugin if it is not already enabled:
 
-Install dependencies:
-
-npm install
-
-Start the development server:
-
-npm run dev
-
-Vite will display the local dashboard URL.
-
-The frontend proxies:
-
-/api
-/healthz
-
-to the backend running on:
-
-http://localhost:8080
-📦 Production Frontend Build
-cd frontend
-npm install
-npm run build
-
-The generated files will be available in:
-
-frontend/dist/
-🐇 RabbitMQ Management
-
-The RabbitMQ management plugin can be enabled with:
-
+```bash
 sudo rabbitmq-plugins enable rabbitmq_management
+```
 
-Then open:
+Then open `http://localhost:15672`. The default local credentials are `guest` / `guest`.
 
-http://localhost:15672
+The management UI can be used to inspect exchanges, queues, consumers, retry queues, messages, and dead-letter queues.
 
-Default local credentials:
-
-guest / guest
-
-The management interface can be used to inspect:
-
-Exchanges
-Queues
-Consumers
-Messages
-Retry queues
-Dead-letter queues
-🗄️ Database Schema
+## Database Schema
 
 SignalDesk uses three primary tables:
 
-notifications
+| Table | Purpose |
+| --- | --- |
+| `notifications` | Original request, current status, recipient, and attempt count |
+| `delivery_attempts` | Provider result for every delivery attempt |
+| `outbox_events` | Events created with a notification for delivery publication |
 
-Stores the notification request and current delivery state.
+Important fields include notification status, retry attempt number, provider reference, error message, creation time, update time, and publication time.
 
-id
-idempotency_key
-channel
-priority
-recipient
-subject
-body
-status
-attempt_count
-created_at
-updated_at
-delivery_attempts
+## Mock Providers
 
-Stores every provider delivery attempt.
+The local provider adapters are:
 
-id
-notification_id
-attempt_number
-channel
-status
-provider_ref
-error_message
-attempted_at
-outbox_events
+- `MockEmailProvider`
+- `MockSmsProvider`
+- `MockPushProvider`
 
-Stores events associated with notification creation.
+They simulate successful delivery, transient failure, and permanent failure. The simulated failures make retry, dead-letter, and circuit-breaker behavior observable without external provider accounts. No real notification is sent by default.
 
-id
-notification_id
-event_type
-payload
-status
-created_at
-published_at
-🧪 Mock Providers
+## Testing and Validation
 
-The project intentionally uses mock providers for local development.
+Build the backend:
 
-MockEmailProvider
-MockSmsProvider
-MockPushProvider
-
-They simulate:
-
-Successful delivery
-       │
-       ├── ~78% success
-       │
-       ├── ~10% transient failure
-       │
-       └── ~2% permanent failure
-
-The simulated failures allow the retry and circuit-breaker mechanisms to be tested without external services.
-
-No real Email, SMS, or Push message is sent by default.
-
-🧠 What This Project Demonstrates
-
-This project was designed to practice real backend and distributed-system concepts:
-
-C++
-Modern C++17
-RAII
-Smart pointers
-Threads
-Concurrency
-Exception handling
-Classes and interfaces
-Backend
-REST API design
-HTTP servers
-JSON APIs
-Database connection pooling
-Repository pattern
-Provider abstraction
-Distributed Systems
-Message queues
-Asynchronous processing
-Retry strategies
-Exponential backoff
-Dead-letter queues
-Idempotency
-Circuit breakers
-Transactional writes
-At-least-once delivery concepts
-DevOps / Infrastructure
-Linux
-WSL
-CMake
-MySQL
-RabbitMQ
-Dependency management
-Service management
-Frontend
-React
-TypeScript
-Vite
-Tailwind CSS
-API integration
-Monitoring dashboard
-🧪 Testing and Validation
-
-Backend build:
-
+```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j1
+```
 
-Frontend build:
+Build the frontend:
 
+```bash
 cd frontend
 npm install
 npm run build
+```
 
-Health check:
+Smoke-test a running service:
 
+```bash
 curl http://localhost:8080/healthz
-
-List notifications:
-
 curl http://localhost:8080/api/notifications
+```
 
 Create a test notification:
 
+```bash
 curl -X POST http://localhost:8080/api/notifications \
   -H "Content-Type: application/json" \
   -d '{
@@ -719,132 +412,48 @@ curl -X POST http://localhost:8080/api/notifications \
     "subject": "SignalDesk Test",
     "body": "Testing notification delivery."
   }'
-⚠️ Project Status
+```
 
-SignalDesk is primarily a learning/reference project.
+## Production Considerations
 
-The current implementation uses:
+SignalDesk is primarily a learning and reference project. Before deploying publicly:
 
-Mock Email provider
-Mock SMS provider
-Mock Push provider
+- Replace mock providers with authenticated Email, SMS, and Push integrations.
+- Add API authentication, authorization, rate limiting, and TLS.
+- Move credentials to environment variables or a secret manager.
+- Add a dedicated outbox publisher or recovery worker.
+- Use managed or separately monitored MySQL and RabbitMQ services.
+- Add structured logs, metrics, tracing, backups, and alerting.
+- Add readiness probes and restrict network access to infrastructure services.
+- Pin dependency versions and add CI security checks.
+- Add automated tests for retries, idempotency, provider failures, and database errors.
 
-The infrastructure and reliability mechanisms are real, but external notification delivery is simulated.
+The current implementation writes the notification and outbox event transactionally, then publishes directly from the API path. A dedicated outbox publisher would remove the failure window between database commit and RabbitMQ publish.
 
-The project is not production-hardened.
+GitHub can host this source repository and the built static dashboard through GitHub Pages. GitHub Pages does not run the C++ backend, MySQL, or RabbitMQ; the backend requires a VPS, container platform, or managed cloud deployment.
 
-🔐 Production Improvements
+## Future Improvements
 
-Before using SignalDesk in a real production environment, consider adding:
+- Real provider adapters
+- Dedicated outbox publisher
+- JWT authentication and authorization
+- API rate limiting
+- Prometheus metrics and OpenTelemetry tracing
+- Docker and Docker Compose support
+- CI/CD pipeline
+- Kubernetes or managed infrastructure deployment
+- Automated integration and end-to-end tests
 
-Real Email provider integration
-Real SMS provider integration
-Real Push notification integration
-API authentication
-Authorization
-Rate limiting
-TLS
-Secret management
-Environment-based configuration
-Production outbox publisher/recovery worker
-Structured logging
-Metrics
-Distributed tracing
-Automated tests
-CI/CD
-Database backups
-RabbitMQ monitoring
-Health/readiness probes
-Containerization
-Kubernetes or managed infrastructure
-⚠️ Important Design Note
+## Contributing
 
-The current reference implementation writes the notification and outbox event transactionally, then publishes the RabbitMQ message directly from the API path.
+1. Create a focused feature branch.
+2. Make the smallest change that solves the problem.
+3. Build both the backend and frontend.
+4. Update documentation when behavior changes.
+5. Open a pull request with validation steps.
 
-Conceptually:
+Do not commit generated build directories, dependency folders, credentials, or local configuration files.
 
-MySQL Transaction
-       │
-       ├── Notification
-       └── Outbox Event
-              │
-              ▼
-          Commit
-              │
-              ▼
-        RabbitMQ Publish
+## License
 
-A production implementation should use a dedicated Outbox Publisher that continuously reads pending outbox events and publishes them to RabbitMQ.
-
-This removes the failure window between:
-
-Database COMMIT
-      │
-      X
-RabbitMQ PUBLISH
-📈 Future Improvements
-
-Possible future extensions:
-
- Real Email provider
- Real SMS provider
- Real Push provider
- Dedicated outbox publisher
- JWT authentication
- API rate limiting
- Prometheus metrics
- OpenTelemetry tracing
- Docker support
- Docker Compose
- CI/CD pipeline
- Kubernetes deployment
- Automated integration tests
- Load testing
- Authentication for RabbitMQ management
- Production secret management
-🤝 Contributing
-
-Contributions and improvements are welcome.
-
-Basic workflow:
-
-git checkout -b feature/my-feature
-
-Make your changes, then build and test:
-
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j1
-
-cd frontend
-npm install
-npm run build
-
-Commit your changes:
-
-git add .
-git commit -m "Add my feature"
-git push origin feature/my-feature
-
-Then open a Pull Request.
-
-🔒 Security
-
-Do not commit:
-
-Passwords
-API keys
-Provider credentials
-Secret tokens
-config.local.json
-.env files
-build directories
-node_modules
-
-Use environment variables or a secret manager for production credentials.
-
-📄 License
-
-No license has been selected for this repository yet. Add a `LICENSE` file before distributing or accepting external contributions.
-#   D i s t r i b u t e d - N o t i f i c a t i o n - D e l i v e r y - S y s t e m 
- 
- 
+No license has been selected for this repository yet. Add a `LICENSE` file before distributing the project or accepting external contributions.
