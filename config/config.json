@@ -1,0 +1,25 @@
+{
+  "dbHost": "127.0.0.1",
+  "dbPort": 33060,
+  "dbUser": "notification_app",
+  "dbPassword": "change-me",
+  "dbSchema": "notification_db",
+  "dbPoolSize": 8,
+
+  "amqpHost": "127.0.0.1",
+  "amqpPort": 5672,
+  "amqpUser": "guest",
+  "amqpPassword": "guest",
+  "amqpVhost": "/",
+
+  "workersPerChannel": 4,
+  "maxRetries": 3,
+  "retryDelaysMs": [5000, 15000, 60000],
+
+  "cbFailureThreshold": 5,
+  "cbOpenDurationMs": 30000,
+
+  "httpAddress": "0.0.0.0",
+  "httpPort": 8080,
+  "httpThreads": 4
+}
