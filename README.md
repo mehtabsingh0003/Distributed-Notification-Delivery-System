@@ -844,27 +844,7 @@ Use environment variables or a secret manager for production credentials.
 
 📄 License
 
-No license has been selected for this project yet.
-
-If you plan to distribute the project publicly, consider adding an appropriate LICENSE file.
-
-👨‍💻 Author
-
-Mehtab Singh
-
-Computer Science & Engineering
-
-Interested in:
-
-Generative AI
-AI Agents
-Backend Engineering
-Distributed Systems
-C++
-Full-Stack Development
-Software Engineering
-
-⭐ If you found this project useful or interesting, consider giving the repository a star.
-
-
-This is the version I'd put on GitHub: **professional enough for a portfolio, but still honest that the providers are mocked and the system is a learning/reference implementation.** The underlying project description and architecture are consistent with the README you provided. :contentReference[oaicite:0]{index=0}
+No license has been selected for this repository yet. Add a `LICENSE` file before distributing or accepting external contributions.
+#   D i s t r i b u t e d - N o t i f i c a t i o n - D e l i v e r y - S y s t e m 
+ 
+ 
